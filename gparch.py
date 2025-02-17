@@ -118,6 +118,12 @@ def load_database(path, init_dict):
     return db
 
 
+def write_response(r, path):
+    with open(path, "wb") as f:
+        for chunk in r.iter_content(chunk_size=1000000):
+            f.write(chunk)
+
+
 class PhotosAccount(object):
     def __init__(self, credentials_path, directory, thread_count, debug):
         # Define directory instance variables
@@ -203,43 +209,43 @@ class PhotosAccount(object):
         try:
             uuid, album_uuid, url, path, description = entry
             if not os.path.isfile(path):
-                r = requests.get(url)
-                if r.status_code == 200:
-                    path = auto_filename(path)
-                    if description:
-                        try:
-                            img = Image.open(io.BytesIO(r.content))
-                            exif_dict = piexif.load(img.info["exif"])
-                            exif_dict["Exif"][
-                                piexif.ExifIFD.UserComment
-                            ] = piexif.helper.UserComment.dump(
-                                description, encoding="unicode"
-                            )
-
-                            # This is a known bug with piexif (https://github.com/hMatoba/Piexif/issues/95)
-                            if 41729 in exif_dict["Exif"]:
-                                exif_dict["Exif"][41729] = bytes(
-                                    exif_dict["Exif"][41729]
+                with requests.get(url, stream=True) as r:
+                    if r.status_code == 200:
+                        path = auto_filename(path)
+                        if description and int(r.headers['content-length']) < 100*1024*1024 and r.headers['content-type'].startswith('image/'):
+                            try:
+                                img = Image.open(io.BytesIO(r.content))
+                                exif_dict = piexif.load(img.info["exif"])
+                                exif_dict["Exif"][
+                                    piexif.ExifIFD.UserComment
+                                ] = piexif.helper.UserComment.dump(
+                                    description, encoding="unicode"
                                 )
 
-                            exif_bytes = piexif.dump(exif_dict)
-                            img.save(path, exif=exif_bytes)
-                        except ValueError:
-                            # This value here is to catch a specific scenario with file extensions that have
-                            # descriptions that are unsupported by Pillow so the program can't modify the EXIF data.
-                            print(
-                                " [INFO] media file unsupported, can't write description to EXIF data."
-                            )
-                            open(path, "wb").write(r.content)
-                    else:
-                        open(path, "wb").write(r.content)
+                                # This is a known bug with piexif (https://github.com/hMatoba/Piexif/issues/95)
+                                if 41729 in exif_dict["Exif"]:
+                                    exif_dict["Exif"][41729] = bytes(
+                                        exif_dict["Exif"][41729]
+                                    )
 
-                    self.downloads += 1
-                    return (
-                        uuid,
-                        path,
-                        album_uuid,
-                    )
+                                exif_bytes = piexif.dump(exif_dict)
+                                img.save(path, exif=exif_bytes)
+                            except ValueError:
+                                # This value here is to catch a specific scenario with file extensions that have
+                                # descriptions that are unsupported by Pillow so the program can't modify the EXIF data.
+                                print(
+                                    " [INFO] media file unsupported, can't write description to EXIF data."
+                                )
+                                write_response(r, path)
+                        else:
+                            write_response(r, path)
+
+                        self.downloads += 1
+                        return (
+                            uuid,
+                            path,
+                            album_uuid,
+                        )
 
             else:
                 return False
