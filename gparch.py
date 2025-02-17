@@ -1,3 +1,4 @@
+import datetime
 import io
 import json
 import os
@@ -5,6 +6,7 @@ import pickle
 import sqlite3
 from multiprocessing.pool import ThreadPool
 from time import time
+import traceback
 
 import piexif
 import piexif.helper
@@ -207,26 +209,46 @@ class PhotosAccount(object):
 
     def download_media_item(self, entry):
         try:
-            uuid, album_uuid, url, path, description = entry
+            uuid, album_uuid, url, path, description, creation_time = entry
             if not os.path.isfile(path):
                 with requests.get(url, stream=True) as r:
                     if r.status_code == 200:
                         path = auto_filename(path)
-                        if description and int(r.headers['content-length']) < 100*1024*1024 and r.headers['content-type'].startswith('image/'):
+                        if (description or creation_time is not None) and int(r.headers['content-length']) < 100*1024*1024 and r.headers['content-type'].startswith('image/'):
                             try:
                                 img = Image.open(io.BytesIO(r.content))
-                                exif_dict = piexif.load(img.info["exif"])
-                                exif_dict["Exif"][
-                                    piexif.ExifIFD.UserComment
-                                ] = piexif.helper.UserComment.dump(
-                                    description, encoding="unicode"
-                                )
+                                exif_dict = {}
+                                if "exif" in img.info:
+                                    try:
+                                        exif_dict = piexif.load(img.info["exif"])
+                                    except Exception:
+                                        print(
+                                            " [INFO] can't parse EXIF data."
+                                        )
+                                exif_dict.setdefault("Exif", {})
+
+                                if description:
+                                    exif_dict["Exif"][
+                                        piexif.ExifIFD.UserComment
+                                    ] = piexif.helper.UserComment.dump(
+                                        description, encoding="unicode"
+                                    )
 
                                 # This is a known bug with piexif (https://github.com/hMatoba/Piexif/issues/95)
                                 if 41729 in exif_dict["Exif"]:
                                     exif_dict["Exif"][41729] = bytes(
                                         exif_dict["Exif"][41729]
                                     )
+
+                                if creation_time is not None:
+                                    creation_time_dt = datetime.datetime.fromisoformat(creation_time.replace("Z", "+00:00"))
+                                    exif_date = creation_time_dt.strftime("%Y:%m:%d %H:%M:%S")
+                                    exif_offset = creation_time_dt.strftime("%z")
+                                    exif_offset = exif_offset[:-2] + ":" + exif_offset[-2:]
+                                    exif_subsec = f"{int(creation_time_dt.microsecond / 1000):03}"
+                                    exif_dict["Exif"][piexif.ExifIFD.DateTimeOriginal] = exif_date
+                                    exif_dict["Exif"][piexif.ExifIFD.OffsetTimeOriginal] = exif_offset
+                                    exif_dict["Exif"][piexif.ExifIFD.SubSecTimeOriginal] = exif_subsec
 
                                 exif_bytes = piexif.dump(exif_dict)
                                 img.save(path, exif=exif_bytes)
@@ -251,6 +273,7 @@ class PhotosAccount(object):
                 return False
         except Exception as e:
             print(" [ERROR] media item could not be downloaded because:", e)
+            traceback.print_exc()
             return False
 
     def download(self, entries, desc, thread_count):
@@ -321,6 +344,7 @@ class PhotosAccount(object):
                         item["baseUrl"] + "=d",
                         item_path,
                         item["description"],
+                        item["mediaMetadata"]["creationTime"],
                     )
                 )
             # - Video
@@ -332,6 +356,7 @@ class PhotosAccount(object):
                         item["baseUrl"] + "=dv",
                         item_path,
                         item["description"],
+                        item["mediaMetadata"]["creationTime"],
                     )
                 )
 
