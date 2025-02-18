@@ -8,14 +8,12 @@ from multiprocessing.pool import ThreadPool
 from time import time
 import traceback
 
-import piexif
-import piexif.helper
+import libxmp
 import requests
 from google.auth.transport.requests import Request
 from sanitize_filename import sanitize
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-from PIL import Image
 from tqdm import tqdm
 
 """
@@ -214,53 +212,38 @@ class PhotosAccount(object):
                 with requests.get(url, stream=True) as r:
                     if r.status_code == 200:
                         path = auto_filename(path)
-                        if (description or creation_time is not None) and int(r.headers['content-length']) < 100*1024*1024 and r.headers['content-type'].startswith('image/'):
+                        write_response(r, path)
+                        if description or creation_time is not None:
+                            xmpfile = None
                             try:
-                                img = Image.open(io.BytesIO(r.content))
-                                exif_dict = {}
-                                if "exif" in img.info:
-                                    try:
-                                        exif_dict = piexif.load(img.info["exif"])
-                                    except Exception:
-                                        print(
-                                            " [INFO] can't parse EXIF data."
-                                        )
-                                exif_dict.setdefault("Exif", {})
+                                xmpfile = libxmp.XMPFiles(file_path=path, open_forupdate=True)
+                                xmp = xmpfile.get_xmp()
+                                if xmp is None:
+                                    print(f" [INFO] {path}: can't parse EXIF data, creating from scratch")
+                                    xmp = libxmp.XMPMeta()
 
                                 if description:
-                                    exif_dict["Exif"][
-                                        piexif.ExifIFD.UserComment
-                                    ] = piexif.helper.UserComment.dump(
-                                        description, encoding="unicode"
-                                    )
-
-                                # This is a known bug with piexif (https://github.com/hMatoba/Piexif/issues/95)
-                                if 41729 in exif_dict["Exif"]:
-                                    exif_dict["Exif"][41729] = bytes(
-                                        exif_dict["Exif"][41729]
-                                    )
+                                    xmp.set_property(libxmp.consts.XMP_NS_EXIF, "UserComment", description)
 
                                 if creation_time is not None:
                                     creation_time_dt = datetime.datetime.fromisoformat(creation_time.replace("Z", "+00:00"))
-                                    exif_date = creation_time_dt.strftime("%Y:%m:%d %H:%M:%S")
-                                    exif_offset = creation_time_dt.strftime("%z")
-                                    exif_offset = exif_offset[:-2] + ":" + exif_offset[-2:]
-                                    exif_subsec = f"{int(creation_time_dt.microsecond / 1000):03}"
-                                    exif_dict["Exif"][piexif.ExifIFD.DateTimeOriginal] = exif_date
-                                    exif_dict["Exif"][piexif.ExifIFD.OffsetTimeOriginal] = exif_offset
-                                    exif_dict["Exif"][piexif.ExifIFD.SubSecTimeOriginal] = exif_subsec
+                                    xmp.set_property(libxmp.consts.XMP_NS_EXIF, "DateTimeOriginal", creation_time_dt.isoformat())
+                                    xmp.set_property(libxmp.consts.XMP_NS_XMP, "CreateDate", creation_time_dt.isoformat())
 
-                                exif_bytes = piexif.dump(exif_dict)
-                                img.save(path, exif=exif_bytes)
+                                if xmpfile.can_put_xmp(xmp):
+                                    xmpfile.put_xmp(xmp)
+                                    xmpfile.close_file(close_flags=libxmp.consts.XMP_CLOSE_SAFEUPDATE)
+                                    xmpfile = None
+                                else:
+                                    xmpfile.close_file()
+                                    xmpfile = None
+                                    with open(path + ".xmp", "w", encoding="utf-8") as f:
+                                        f.write(xmp.serialize_to_str())
                             except ValueError:
-                                # This value here is to catch a specific scenario with file extensions that have
-                                # descriptions that are unsupported by Pillow so the program can't modify the EXIF data.
-                                print(
-                                    " [INFO] media file unsupported, can't write description to EXIF data."
-                                )
-                                write_response(r, path)
-                        else:
-                            write_response(r, path)
+                                print(f" [INFO] {path}: error updating EXIF data.")
+                            finally:
+                                if xmpfile is not None:
+                                    xmpfile.close_file()
 
                         self.downloads += 1
                         return (

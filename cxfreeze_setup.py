@@ -24,6 +24,9 @@ from gparch import VERSION
 
 """
 
+# opcode is not a virtualenv module, so we can use it to find the stdlib; this is the same
+# trick used by distutils itself it installs itself into the virtualenv
+distutils_path = '/usr/lib/python3/dist-packages/setuptools/_distutils'
 
 def collect_dist_info(packages):
     """
@@ -49,16 +52,19 @@ build_exe_options = {
         "os",
         "pickle",
         "multiprocessing",
-        "piexif",
+        "libxmp",
         "google.auth.transport.requests",
         "google_auth_oauthlib.flow",
         "googleapiclient.discovery",
         "httplib2",
-        "PIL",
         "tqdm",
         "pkg_resources",
     ],
-    "include_files": collect_dist_info("google_api_python_client") + ["gparch.py"]
+    "excludes": [
+        "distutils"
+    ],
+    "include_files": collect_dist_info("google_api_python_client") +
+            [(distutils_path, 'distutils'), "gparch.py"],
 }
 
 base = None

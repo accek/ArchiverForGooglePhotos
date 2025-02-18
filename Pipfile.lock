@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "9a711fcdd1d589d6f9d98a0adb040b764c215e1ad6185eb51e4342e08c58a15e"
+            "sha256": "be95de384454287e501b93296a30716199a7c5ccbc49a5be60fe6fc286938411"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -489,6 +489,21 @@
             ],
             "markers": "python_version >= '3.9'",
             "version": "==3.2.1"
+        },
+        "python-xmp-toolkit": {
+            "hashes": [
+                "sha256:3a88431bb8222e9723da688b3ead50506f3ed3002749362845745dd995a7a68b",
+                "sha256:dad1c2dcf5392459ecf2d0e368a7bbcab099cac7ef9f75fa53612db4efbcda8a"
+            ],
+            "index": "pypi",
+            "version": "==2.0.2"
+        },
+        "pytz": {
+            "hashes": [
+                "sha256:89dd22dca55b46eac6eda23b2d72721bf1bdfef212645d81513ef5d03038de57",
+                "sha256:c2db42be2a2518b28e65f9207c4d05e6ff547d1efa4086469ef855e4ab70178e"
+            ],
+            "version": "==2025.1"
         },
         "requests": {
             "hashes": [
