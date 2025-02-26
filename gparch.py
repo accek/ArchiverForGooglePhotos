@@ -2,7 +2,6 @@ import datetime
 import io
 import json
 import os
-import pickle
 import sqlite3
 from multiprocessing.pool import ThreadPool
 from time import time
@@ -11,6 +10,7 @@ import traceback
 import libxmp
 import requests
 from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 from sanitize_filename import sanitize
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
@@ -97,7 +97,7 @@ def auto_filename(path, instance=0):
 
 
 def save_json(variable, path):
-    json.dump(variable, open(auto_filename(path), "w"))
+    json.dump(variable, open(path, "w"))
 
 
 def load_json(path):
@@ -107,15 +107,6 @@ def load_json(path):
     # If file doesn't exist return None
     else:
         return None
-
-
-def load_database(path, init_dict):
-    # Create and/or Load the databases
-    db = load_json(path)
-    if db is None:
-        db = init_dict
-    save_json(db, path)
-    return db
 
 
 def write_response(r, path):
@@ -142,7 +133,8 @@ class PhotosAccount(object):
         self.debug = debug
 
         if self.debug:
-            safe_mkdir("debug")
+            self.debug_dir = self.base_dir + "/debug"
+            safe_mkdir(self.debug_dir)
 
         # Define/Init Database
         self.db_path = self.base_dir + "/" + DATABASE_NAME
@@ -157,14 +149,16 @@ class PhotosAccount(object):
         safe_mkdir(self.favorites_dir)
 
     def get_google_api_service(self):
-        # The file photos_token.pickle stores the user's access and refresh tokens, and is
+        # The file photos_token.json stores the user's access and refresh tokens, and is
         # created automatically when the authorization flow completes for the first time.
         credentials = None
-        token_path = self.base_dir + "/photoslibrary_token.pickle"
+        token_path = self.base_dir + "/photoslibrary_token.json"
 
-        if os.path.exists(token_path):
-            with open(token_path, "rb") as token:
-                credentials = pickle.load(token)
+        try:
+            credentials = Credentials.from_authorized_user_file(token_path, SCOPES)
+        except Exception:
+            pass
+
         # If there are no (valid) credentials available, let the user log in.
         if not credentials or not credentials.valid:
             if credentials and credentials.expired and credentials.refresh_token:
@@ -174,12 +168,18 @@ class PhotosAccount(object):
                     raise FileNotFoundError(self.credentials + " is not found.")
 
                 flow = InstalledAppFlow.from_client_secrets_file(
-                    self.credentials, SCOPES
+                    self.credentials,
+                    scopes=SCOPES,
+                    redirect_uri='urn:ietf:wg:oauth:2.0:oob',
                 )
-                credentials = flow.run_local_server()
+                auth_url, _ = flow.authorization_url(prompt='consent')
+                print('Please go to this URL: {}'.format(auth_url))
+                code = input('Enter the authorization code: ')
+                flow.fetch_token(code=code)
+                credentials = flow.credentials
             # Save the credentials for the next run
-            with open(token_path, "wb") as token:
-                pickle.dump(credentials, token)
+            with open(token_path, "w", encoding="utf-8") as token:
+                token.write(credentials.to_json())
 
         self.service = build(
             "photoslibrary", "v1", credentials=credentials, static_discovery=False
@@ -215,9 +215,13 @@ class PhotosAccount(object):
                         write_response(r, path)
                         if description or creation_time is not None:
                             xmpfile = None
+                            xmp = None
                             try:
-                                xmpfile = libxmp.XMPFiles(file_path=path, open_forupdate=True)
-                                xmp = xmpfile.get_xmp()
+                                try:
+                                    xmpfile = libxmp.XMPFiles(file_path=path, open_forupdate=True)
+                                    xmp = xmpfile.get_xmp()
+                                except Exception:
+                                    pass
                                 if xmp is None:
                                     print(f" [INFO] {path}: can't parse EXIF data, creating from scratch")
                                     xmp = libxmp.XMPMeta()
@@ -230,17 +234,21 @@ class PhotosAccount(object):
                                     xmp.set_property(libxmp.consts.XMP_NS_EXIF, "DateTimeOriginal", creation_time_dt.isoformat())
                                     xmp.set_property(libxmp.consts.XMP_NS_XMP, "CreateDate", creation_time_dt.isoformat())
 
-                                if xmpfile.can_put_xmp(xmp):
-                                    xmpfile.put_xmp(xmp)
-                                    xmpfile.close_file(close_flags=libxmp.consts.XMP_CLOSE_SAFEUPDATE)
-                                    xmpfile = None
-                                else:
-                                    xmpfile.close_file()
-                                    xmpfile = None
+                                saved = False
+                                try:
+                                    if xmpfile is not None and xmpfile.can_put_xmp(xmp):
+                                        xmpfile.put_xmp(xmp)
+                                        xmpfile.close_file(close_flags=libxmp.consts.XMP_CLOSE_SAFEUPDATE)
+                                        xmpfile = None
+                                        saved = True
+                                except Exception as e:
+                                    print(f" [INFO] {path}: error updating embedded EXIF data: {e}")
+
+                                if not saved:
                                     with open(path + ".xmp", "w", encoding="utf-8") as f:
                                         f.write(xmp.serialize_to_str())
-                            except ValueError:
-                                print(f" [INFO] {path}: error updating EXIF data.")
+                            except Exception as e:
+                                print(f" [INFO] {path}: error updating EXIF data: {e}")
                             finally:
                                 if xmpfile is not None:
                                     xmpfile.close_file()
@@ -399,7 +407,7 @@ class PhotosAccount(object):
                 break
 
         if self.debug:
-            save_json(album_items, "debug/" + album["title"] + ".json")
+            save_json(album_items, self.debug_dir + "/album-" + album["id"] + ".json")
 
         # Directory where the album exists
         album_path = None
@@ -439,7 +447,7 @@ class PhotosAccount(object):
             return {}
         while True:
             if self.debug:
-                save_json(request, "debug/media" + str(num) + ".json")
+                save_json(request, self.debug_dir + "/media" + str(num) + ".json")
             if "mediaItems" in request:
                 media_items_list += request["mediaItems"]
             if "nextPageToken" in request:
@@ -453,7 +461,7 @@ class PhotosAccount(object):
                 break
             num += 1
         if self.debug:
-            save_json(media_items_list, "debug/media_items_list.json")
+            save_json(media_items_list, self.debug_dir + "/media_items_list.json")
         return media_items_list
 
     def list_albums(self):
@@ -464,7 +472,7 @@ class PhotosAccount(object):
             return {}
         while True:
             if self.debug:
-                save_json(request, "debug/albums" + str(num) + ".json")
+                save_json(request, self.debug_dir + "/albums" + str(num) + ".json")
             if "albums" in request:
                 album_list += request["albums"]
             if "nextPageToken" in request:
@@ -478,7 +486,7 @@ class PhotosAccount(object):
                 break
             num += 1
         if self.debug:
-            save_json(album_list, "debug/album_list.json")
+            save_json(album_list, self.debug_dir + "/album_list.json")
         return album_list
 
     def list_shared_albums(self):
@@ -489,7 +497,7 @@ class PhotosAccount(object):
             return {}
         while True:
             if self.debug:
-                save_json(request, "debug/shared_albums" + str(num) + ".json")
+                save_json(request, self.debug_dir + "/shared_albums" + str(num) + ".json")
             shared_album_list += request["sharedAlbums"]
             if "nextPageToken" in request:
                 next_page = request["nextPageToken"]
@@ -502,7 +510,7 @@ class PhotosAccount(object):
                 break
             num += 1
         if self.debug:
-            save_json(shared_album_list, "debug/shared_album_list.json")
+            save_json(shared_album_list, self.debug_dir + "/shared_album_list.json")
         return shared_album_list
 
     def search_favorites(self):
@@ -520,7 +528,7 @@ class PhotosAccount(object):
             return {}
         while True:
             if self.debug:
-                save_json(request, "debug/favorites" + str(num) + ".json")
+                save_json(request, self.debug_dir + "/favorites" + str(num) + ".json")
             if "mediaItems" in request:
                 favorites_list += request["mediaItems"]
             if "nextPageToken" in request:
@@ -530,5 +538,5 @@ class PhotosAccount(object):
                 break
             num += 1
         if self.debug:
-            save_json(favorites_list, "debug/favorites_list.json")
+            save_json(favorites_list, self.debug_dir + "/favorites_list.json")
         return favorites_list

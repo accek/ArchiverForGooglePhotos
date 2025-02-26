@@ -27,6 +27,7 @@ By: Nick Dawson | nick@ndawson.me
 
 import argparse
 from os import getcwd
+import sys
 
 from colorama import Fore, init
 
@@ -90,6 +91,12 @@ if __name__ == "__main__":
         action="store_true",
     )
 
+    parser.add_argument(
+        "--auth-only",
+        help="only authorize to Google and save/refresh auth token",
+        action="store_true",
+    )
+
     args = parser.parse_args()
 
     # Welcome Message
@@ -112,6 +119,9 @@ if __name__ == "__main__":
     account = PhotosAccount(args.credentials, args.directory, args.threads, args.debug)
 
     account.get_google_api_service()
+
+    if args.auth_only:
+        sys.exit(0)
 
     # ==============
     # ARG PROCESSING
